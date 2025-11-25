@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Tree Builder (SQLite)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script> 
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="flowchart.css">
+</head>
+<body>
+<div class="scroll-container">
+    <div id="app" class="app-container">
+        <div id="status-message" class="hidden p-3 mb-4 rounded-lg text-sm transition-all duration-300"></div>
+
+        <div id="filter-toggle-container" class="fixed top-4 left-4 z-40">
+            <button id="filter-toggle-button" onclick="toggleFilterPanel()" 
+                    class="p-3 bg-blue-600 text-white font-semibold rounded-full shadow-lg hover:bg-blue-700 transition duration-150">
+                <svg data-lucide="filter" width="20" height="20"></svg>
+            </button>
+        </div>
+
+        <div id="filter-panel-container" class="fixed top-0 bottom-0 left-0 bg-white p-6 z-30 transition-transform duration-300 transform -translate-x-full overflow-y-auto">
+            <h2 class="text-xl font-bold text-gray-800 border-b pb-2 mb-4 flex justify-between items-center">
+                Filter & Search
+                <button onclick="toggleFilterPanel()" class="text-gray-500 hover:text-gray-800">
+                    <svg data-lucide="x" width="24" height="24"></svg>
+                </button>
+            </h2>
+
+            <div class="space-y-6">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Search Node Name</label>
+                    <input type="text" id="search-filter-input" placeholder="Start typing a node name..." 
+                           class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" 
+                           oninput="applyFilters()">
+                    <p class="text-xs text-gray-500 mt-1">Shows node and its entire hierarchy.</p>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Filter by Connection Status</label>
+                    <select id="connection-filter-select" 
+                            class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white" 
+                            onchange="applyFilters()">
+                        <option value="none">Show All Nodes</option>
+                        <option value="inbound">Only Nodes with Inbound Links (IN > 0)</option>
+                        <option value="outbound">Only Nodes with Outbound Links (OUT > 0)</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Filters the main view instantly.</p>
+                </div>
+                
+                <button onclick="resetZoom(); loadAndRenderVisuals(stableRootId)" class="w-full py-2 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 transition duration-150 shadow-md">
+                    Fit to View / Reset
+                </button>
+            </div>
+        </div>
+
+        <div id="zoom-toggle-container" class="fixed top-4 right-4 z-40">
+            <button id="zoom-toggle-button" onclick="toggleZoomBar()" 
+                    class="p-3 bg-indigo-500 text-white font-semibold rounded-full shadow-lg hover:bg-indigo-600 transition duration-150">
+                <svg data-lucide="maximize" width="20" height="20"></svg>
+            </button>
+        </div>
+
+        <div id="zoom-bar-container" class="hidden fixed top-4 right-4 z-30 transition-all duration-300 transform translate-x-full">
+            <div class="flex justify-center space-x-4 p-2 bg-white rounded-lg shadow-md border border-gray-200">
+                <button onclick="zoomOut()" class="py-1 px-3 bg-gray-200 text-gray-700 font-semibold rounded-lg hover:bg-gray-300 transition duration-150">
+                    <svg data-lucide="zoom-out" width="16" height="16"></svg>
+                </button>
+                <button onclick="zoomIn()" class="py-1 px-3 bg-gray-200 text-gray-700 font-semibold rounded-lg hover:bg-gray-300 transition duration-150">
+                    <svg data-lucide="zoom-in" width="16" height="16"></svg>
+                </button>
+                <button onclick="resetZoom()" class="py-1 px-3 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-150">
+                    Fit to View / Reset
+                </button>
+            </div>
+        </div>
+        
+        <div id="tree-visualization" class="min-h-[300px] overflow-auto">
+            <div id="tree-content-wrapper">
+                <p id="tree-placeholder" class="text-center text-gray-500 italic p-10">Loading tree structure...</p>
+            </div>
+        </div>
+
+    </div>
+
+    <div id="child-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
+        <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Add Child Node to <span id="parent-name-display" class="text-gray-900"></span></h2>
+            <form id="create-child-form" class="space-y-3">
+                <input type="hidden" id="modal-parent-id"> 
+                <input type="text" id="child-name" placeholder="Child Node Name (Required)" required 
+                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                <textarea id="child-description" placeholder="Searchable Description" 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 h-24 resize-none"></textarea>
+                <div class="flex justify-end space-x-3 pt-4">
+                    <button type="button" id="modal-cancel-child" class="py-2 px-4 text-gray-600 font-semibold rounded-lg hover:bg-gray-100 transition duration-150">
+                        Cancel
+                    </button>
+                    <button type="submit" class="py-2 px-4 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition duration-150 shadow-md">
+                        Save Child Node
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="info-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
+        <div class="bg-white p-6 rounded-xl node-card w-full max-w-lg"> 
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Node Details: <span id="info-node-name" class="text-gray-900"></span></h2>
+            <div class="space-y-2">
+                <p class="text-sm"><span class="font-semibold">ID:</span> <span id="info-node-id" class="font-mono text-xs"></span></p>
+                <p class="text-sm"><span class="font-semibold">Status:</span> <span id="info-node-status" class="px-2 py-0.5 rounded text-xs font-medium"></span></p>
+                <p class="text-sm font-semibold pt-2">Description:</p>
+                <p id="info-node-description" class="p-3 bg-gray-50 rounded-lg text-sm whitespace-pre-wrap"></p>
+            </div>
+            
+            <h3 class="text-md font-semibold text-gray-700 mt-4 border-t pt-3">Click Statistics</h3>
+            
+            <div id="info-inbound-stats" class="text-sm border p-3 rounded-md mb-4">
+                <p class="font-bold text-gray-800 border-b pb-2">Total Inbound Clicks: <span id="inbound-count-display" class="font-bold">...</span></p>
+                <p class="text-sm font-semibold pt-2 text-gray-700">In-bound Node List:</p>
+                <div id="inbound-details-display" class="pt-1">
+                    <p class="text-xs text-gray-600 italic mt-1">Fetching list...</p>
+                </div>
+            </div>
+            
+            <div id="info-outbound-stats" class="text-sm border p-3 rounded-md">
+                <p class="font-bold text-gray-800 border-b pb-2">Total Outbound Clicks: <span id="outbound-count-display" class="font-bold">...</span></p>
+                <p class="text-sm font-semibold pt-2 text-gray-700">Out-bound Node List:</p>
+                <div id="outbound-details-display" class="pt-1">
+                    <p class="text-xs text-gray-600 italic mt-1">Fetching list...</p>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-4">
+                <button type="button" onclick="closeInfoModal()" class="py-2 px-4 bg-gray-500 text-white font-semibold rounded-lg hover:bg-gray-600 transition duration-150 shadow-md">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="edit-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
+        <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Edit Node: <span id="edit-node-name-old-display" class="text-gray-900"></span></h2>
+            <form id="edit-node-form" class="space-y-3">
+                <input type="hidden" id="edit-content-id"> 
+                
+                <label for="edit-status" class="block text-sm font-medium text-gray-700 pt-2">Status</label>
+                <select id="edit-status" 
+                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white">
+                    <option value="New">New (Open)</option>
+                    <option value="Processing">Processing</option>
+                    <option value="Completed">Completed</option>
+                </select>
+                
+                <label for="edit-name" class="block text-sm font-medium text-gray-700 pt-2">Name</label>
+                <input type="text" id="edit-name" placeholder="New Node Name (Required)" required 
+                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500">
+
+                <label for="edit-description" class="block text-sm font-medium text-gray-700 pt-2">Description</label>
+                <textarea id="edit-description" placeholder="Searchable Description" 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 h-24 resize-none"></textarea>
+                
+                <div class="flex justify-end space-x-3 pt-4">
+                    <button type="button" onclick="closeEditModal()" class="py-2 px-4 text-gray-600 font-semibold rounded-lg hover:bg-gray-100 transition duration-150">
+                        Cancel
+                    </button>
+                    <button type="submit" class="py-2 px-4 bg-yellow-600 text-white font-semibold rounded-lg hover:bg-yellow-700 transition duration-150 shadow-md">
+                        Save Changes
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="delete-confirm-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
+        <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
+            <h2 class="text-xl font-semibold text-red-600 mb-4">Confirm Deletion</h2>
+            <p class="text-gray-700 mb-6">Are you sure you want to delete the node: <span id="delete-node-name" class="font-bold"></span>?</p>
+            <p class="text-sm text-red-500 mb-6">This action cannot be undone and will delete all its associated links (traffic stats and static relationships).</p>
+            <div class="flex justify-end space-x-3">
+                <button type="button" onclick="closeDeleteConfirmModal()" class="py-2 px-4 text-gray-600 font-semibold rounded-lg hover:bg-gray-100 transition duration-150">
+                    Cancel
+                </button>
+                <button type="button" id="confirm-delete-button" class="py-2 px-4 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition duration-150 shadow-md">
+                    Yes, Delete Node
+                    
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="search-link-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
+        <div class="bg-white p-6 rounded-xl node-card w-full max-w-lg">
+            <h2 class="text-sm font-semibold text-gray-500 tracking-wide uppercase mb-1">
+                Create Outbound Links
+            </h2>
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">
+                <span id="link-parent-name-display" class="text-gray-900"></span>
+            </h3>
+            
+            <div class="flex space-x-2 mb-4">
+                <input type="text" id="search-input" placeholder="Search Node Name or Description" 
+                        class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                <button type="button" id="start-search-button" class="py-2 px-4 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md">
+                    Search
+                </button>
+            </div>
+            
+            <div class="max-h-60 overflow-y-auto border p-3 rounded-lg bg-gray-50">
+                <p id="search-status-message" class="text-center text-gray-500 italic">Start searching to find nodes to link.</p>
+                <ul id="search-results-list" class="space-y-2">
+                    </ul>
+            </div>
+            
+            <input type="hidden" id="link-modal-parent-id"> 
+            
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button" onclick="closeSearchLinkModal()" class="py-2 px-4 text-gray-600 font-semibold rounded-lg hover:bg-gray-100 transition duration-150">
+                    Cancel
+                </button>
+                <button type="button" id="confirm-link-button" class="py-2 px-4 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition duration-150 shadow-md" disabled>
+                    Link Selected Nodes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="flowchart.js"></script>
+</body>
+</html>
