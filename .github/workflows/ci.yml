@@ -30,4 +30,4 @@ jobs:
 
       - name: Basic syntax check
         run: |
-          python -m py_compile server.py
+          python -m py_compile server.py 
