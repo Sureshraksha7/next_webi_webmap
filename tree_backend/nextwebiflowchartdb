@@ -1,0 +1,29 @@
+CREATE TABLE nodes (
+    content_id   UUID PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT DEFAULT '',
+    status       TEXT DEFAULT 'New',
+    created_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE relationships (
+    id          SERIAL PRIMARY KEY,
+    parent_id   UUID NOT NULL,
+    child_id    UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE clicks (
+    id            SERIAL PRIMARY KEY,
+    source_id     UUID NOT NULL,
+    target_id     UUID NOT NULL,
+    count         INTEGER NOT NULL,
+    first_clicked TIMESTAMPTZ NOT NULL,
+    last_clicked  TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_nodes_created_at  ON nodes(created_at);
+CREATE INDEX idx_rel_parent        ON relationships(parent_id);
+CREATE INDEX idx_rel_child         ON relationships(child_id);
+CREATE INDEX idx_clicks_source     ON clicks(source_id);
+CREATE INDEX idx_clicks_target     ON clicks(target_id);

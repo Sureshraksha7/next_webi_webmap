@@ -3,3 +3,5 @@ flask-cors
 gunicorn
 pymongo 
 python-dotenv
+psycopg2-binary
+psycopg2

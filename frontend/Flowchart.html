@@ -29,13 +29,33 @@
                 </button>
             </h2>
 
+            <p id="total-node-count" class="text-xs text-gray-500 mb-3">
+                Total nodes: 0
+            </p>
+
             <div class="space-y-6">
                 <div>
                     <label class="block text-sm font-semibold text-gray-700 mb-2">Search Node Name</label>
                     <input type="text" id="search-filter-input" placeholder="Start typing a node name..." 
                            class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" 
                            oninput="applyFilters()">
-                    <p class="text-xs text-gray-500 mt-1">Shows node and its entire hierarchy.</p>
+                </div>
+
+                <!-- Search by ID -->
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">
+                        Search Node ID
+                    </label>
+                    <input
+                        type="text"
+                        id="search-id-input"
+                        placeholder="Type friendly ID (01) or system ID..."
+                        class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                        oninput="applyFilters()"
+                    >
+                    <p class="text-xs text-gray-500 mt-1">
+                        Matches short ID (01, 02, 03...) or part of the full ID.
+                    </p>
                 </div>
                 
                 <div>
@@ -48,6 +68,19 @@
                         <option value="outbound">Only Nodes with Outbound Links (OUT > 0)</option>
                     </select>
                     <p class="text-xs text-gray-500 mt-1">Filters the main view instantly.</p>
+                </div>
+
+                <div class="mt-4">
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Filter by Node Status</label>
+                    <select id="status-filter-select"
+                            class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                            onchange="applyFilters()">
+                        <option value="all">Show All</option>
+                        <option value="New">New</option>
+                        <option value="Processing">Processing</option>
+                        <option value="Completed">Completed</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Show only nodes with a specific status.</p>
                 </div>
                 
                 <button onclick="resetZoom(); loadAndRenderVisuals(stableRootId)" class="w-full py-2 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 transition duration-150 shadow-md">
@@ -85,6 +118,7 @@
 
     </div>
 
+    <!-- Add Child Modal -->
     <div id="child-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
         <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
             <h2 class="text-xl font-semibold text-gray-700 mb-4">Add Child Node to <span id="parent-name-display" class="text-gray-900"></span></h2>
@@ -106,42 +140,49 @@
         </div>
     </div>
 
+    <!-- Info Modal -->
     <div id="info-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
-        <div class="bg-white p-6 rounded-xl node-card w-full max-w-lg"> 
-            <h2 class="text-xl font-semibold text-gray-700 mb-4">Node Details: <span id="info-node-name" class="text-gray-900"></span></h2>
-            <div class="space-y-2">
-                <p class="text-sm"><span class="font-semibold">ID:</span> <span id="info-node-id" class="font-mono text-xs"></span></p>
-                <p class="text-sm"><span class="font-semibold">Status:</span> <span id="info-node-status" class="px-2 py-0.5 rounded text-xs font-medium"></span></p>
-                <p class="text-sm font-semibold pt-2">Description:</p>
-                <p id="info-node-description" class="p-3 bg-gray-50 rounded-lg text-sm whitespace-pre-wrap"></p>
+        <div class="bg-white rounded-xl node-card w-full max-w-3xl h-[80vh] flex flex-col">
+            <!-- Header -->
+            <div class="p-6 border-b">
+                <h2 class="text-xl font-semibold text-gray-700">
+                    Node Details: <span id="info-node-name" class="text-gray-900"></span>
+                </h2>
             </div>
-            
-            <h3 class="text-md font-semibold text-gray-700 mt-4 border-t pt-3">Click Statistics</h3>
-            
-            <div id="info-inbound-stats" class="text-sm border p-3 rounded-md mb-4">
-                <p class="font-bold text-gray-800 border-b pb-2">Total Inbound Clicks: <span id="inbound-count-display" class="font-bold">...</span></p>
-                <p class="text-sm font-semibold pt-2 text-gray-700">In-bound Node List:</p>
-                <div id="inbound-details-display" class="pt-1">
-                    <p class="text-xs text-gray-600 italic mt-1">Fetching list...</p>
-                </div>
-            </div>
-            
-            <div id="info-outbound-stats" class="text-sm border p-3 rounded-md">
-                <p class="font-bold text-gray-800 border-b pb-2">Total Outbound Clicks: <span id="outbound-count-display" class="font-bold">...</span></p>
-                <p class="text-sm font-semibold pt-2 text-gray-700">Out-bound Node List:</p>
-                <div id="outbound-details-display" class="pt-1">
-                    <p class="text-xs text-gray-600 italic mt-1">Fetching list...</p>
+
+            <!-- Scrollable body -->
+            <div class="px-6 pt-4 pb-2 flex-1 overflow-y-auto">
+                <div class="space-y-2">
+                    <p class="text-sm">
+                        <span class="font-semibold">ID:</span>
+                        <span id="info-node-id" class="font-mono text-xs"></span>
+                    </p>
+                    <p class="text-sm">
+                        <span class="font-semibold">Status:</span>
+                        <span id="info-node-status" class="px-2 py-0.5 rounded text-xs font-medium"></span>
+                    </p>
+
+                    <p class="text-sm font-semibold pt-2">Description:</p>
+                    <p id="info-description" class="text-sm text-gray-700"></p>
+                    <p id="info-node-description" class="p-3 bg-gray-50 rounded-lg text-sm whitespace-pre-wrap"></p>
+
+                    <p class="text-sm font-semibold pt-2">Path:</p>
+                    <pre id="info-path"
+                         class="p-3 bg-gray-50 rounded-lg text-xs text-gray-800 whitespace-pre-wrap break-words leading-snug"></pre>
                 </div>
             </div>
 
-            <div class="flex justify-end pt-4">
-                <button type="button" onclick="closeInfoModal()" class="py-2 px-4 bg-gray-500 text-white font-semibold rounded-lg hover:bg-gray-600 transition duration-150 shadow-md">
+            <!-- Footer -->
+            <div class="px-6 py-4 border-t flex justify-end">
+                <button type="button" onclick="closeInfoModal()"
+                        class="py-2 px-4 bg-gray-500 text-white font-semibold rounded-lg hover:bg-gray-600 transition duration-150 shadow-md">
                     Close
                 </button>
             </div>
         </div>
     </div>
 
+    <!-- Edit Modal -->
     <div id="edit-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
         <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
             <h2 class="text-xl font-semibold text-gray-700 mb-4">Edit Node: <span id="edit-node-name-old-display" class="text-gray-900"></span></h2>
@@ -176,6 +217,7 @@
         </div>
     </div>
 
+    <!-- Delete Confirm Modal -->
     <div id="delete-confirm-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
         <div class="bg-white p-6 rounded-xl node-card w-full max-w-md">
             <h2 class="text-xl font-semibold text-red-600 mb-4">Confirm Deletion</h2>
@@ -187,12 +229,12 @@
                 </button>
                 <button type="button" id="confirm-delete-button" class="py-2 px-4 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition duration-150 shadow-md">
                     Yes, Delete Node
-                    
                 </button>
             </div>
         </div>
     </div>
 
+    <!-- Search & Link Modal -->
     <div id="search-link-modal" class="fixed inset-0 hidden items-center justify-center z-50 modal-backdrop">
         <div class="bg-white p-6 rounded-xl node-card w-full max-w-lg">
             <h2 class="text-sm font-semibold text-gray-500 tracking-wide uppercase mb-1">
@@ -213,7 +255,7 @@
             <div class="max-h-60 overflow-y-auto border p-3 rounded-lg bg-gray-50">
                 <p id="search-status-message" class="text-center text-gray-500 italic">Start searching to find nodes to link.</p>
                 <ul id="search-results-list" class="space-y-2">
-                    </ul>
+                </ul>
             </div>
             
             <input type="hidden" id="link-modal-parent-id"> 
