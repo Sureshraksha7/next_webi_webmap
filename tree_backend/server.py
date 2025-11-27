@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import logging
 from functools import wraps
 from werkzeug.middleware.proxy_fix import ProxyFix
-from flask_caching import Cache, memoize
+from flask_caching import Cache
 import time
 from psycopg2 import OperationalError
 from typing import Set, Dict, Any, List
