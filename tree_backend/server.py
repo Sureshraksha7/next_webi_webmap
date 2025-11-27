@@ -298,7 +298,6 @@ def delete_node(conn, content_id):
 # ... (include all your existing endpoints here without modification)
 
 # Initialize connection pool and create indexes on startup
-@app.before_first_request
 def startup():
     init_db_pool()
     # Create database indexes on startup
@@ -309,6 +308,10 @@ def startup():
         logger.error(f"Failed to create database indexes: {str(e)}")
     finally:
         return_db_connection(conn)
+
+# Call the function when the app starts
+with app.app_context():
+    startup()
 
 # Clean up on shutdown
 def shutdown():
