@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import logging
 from functools import wraps
 from werkzeug.middleware.proxy_fix import ProxyFix
-from flask_caching import Cache
+from flask_caching import Cache, memoize
 import time
 from psycopg2 import OperationalError
 from typing import Set, Dict, Any, List
@@ -35,7 +35,7 @@ cache = Cache(config={
     'CACHE_KEY_PREFIX': 'flow_'
 })
 cache.init_app(app)
-
+#hiiii
 # Constants
 DB_CONNECTION_TIMEOUT = 5  # seconds
 QUERY_TIMEOUT = 10  # seconds
@@ -182,7 +182,41 @@ def create_indexes(conn):
             $$;
         """)
         conn.commit()
-
+@app.route('/tree', methods=['GET'])
+@with_db_connection
+@cache.memoize(timeout=60)
+def get_tree(conn):
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Fetch all nodes
+            cur.execute("""
+                SELECT content_id, title, parent_id, content, 
+                       created_at, updated_at, level, position, 
+                       is_expanded, is_leaf, is_loading, is_editing, 
+                       is_renaming, is_selected, is_hidden, has_children, 
+                       children, metadata, type, icon, is_checked, 
+                       is_indeterminate, is_draggable, is_droppable, 
+                       is_selectable, is_dragging, is_drop_target, 
+                       is_drop_allowed, is_drop_disabled, is_drop_ancestor
+                FROM nodes
+                ORDER BY position
+            """)
+            nodes = cur.fetchall()
+            
+            # Convert UUID and datetime to string for JSON serialization
+            for node in nodes:
+                if 'content_id' in node:
+                    node['content_id'] = str(node['content_id'])
+                if 'created_at' in node and node['created_at']:
+                    node['created_at'] = node['created_at'].isoformat()
+                if 'updated_at' in node and node['updated_at']:
+                    node['updated_at'] = node['updated_at'].isoformat()
+                    
+            return jsonify(nodes)
+            
+    except Exception as e:
+        logger.error(f"Error fetching tree: {str(e)}")
+        return jsonify({"error": "Failed to fetch tree data"}), 500
 # API Endpoints
 @app.route("/node/create", methods=["POST"])
 @with_db_connection
