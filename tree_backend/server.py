@@ -557,42 +557,6 @@ def reset_all():
 
     return jsonify({"message": "Reset done"})
 
-@app.route("/stats/all", methods=["GET"])
-def get_all_stats():
-    conn = get_db_conn()
-    try:
-        with conn.cursor() as cur:
-            # Get total inbound clicks per node (where node is the target)
-            cur.execute("""
-                SELECT target_id AS node_id, COALESCE(SUM(count), 0) AS total_inbound_count
-                FROM clicks
-                GROUP BY target_id
-            """)
-            inbound_stats = {row["node_id"]: row["total_inbound_count"] for row in cur.fetchall()}
-
-            # Get total outbound clicks per node (where node is the source)
-            cur.execute("""
-                SELECT source_id AS node_id, COALESCE(SUM(count), 0) AS total_outbound_count
-                FROM clicks
-                GROUP BY source_id
-            """)
-            outbound_stats = {row["node_id"]: row["total_outbound_count"] for row in cur.fetchall()}
-
-            # Combine all node IDs from both queries
-            all_node_ids = set(inbound_stats.keys()) | set(outbound_stats.keys())
-            
-            # Build response with 0 as default for missing entries
-            result = {
-                node_id: {
-                    "total_inbound_count": inbound_stats.get(node_id, 0),
-                    "total_outbound_count": outbound_stats.get(node_id, 0)
-                }
-                for node_id in all_node_ids
-            }
-
-            return jsonify(result)
-    finally:
-        conn.close()
 
 # -------------------------
 # START SERVER
