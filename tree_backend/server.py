@@ -1,266 +1,110 @@
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import uuid
 import psycopg2
-from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from dotenv import load_dotenv
-import logging
-from functools import wraps
-from werkzeug.middleware.proxy_fix import ProxyFix
-from flask_caching import Cache
-import time
-from psycopg2 import OperationalError
-from typing import Set, Dict, Any, List
-import json
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+load_dotenv()  # this reads .env and populates os.environ
 
-load_dotenv()
-
-# Configuration
+# -------------------------
+# Flask app + CORS
+# -------------------------
 app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 CORS(app)
 
-# Cache configuration
-cache = Cache(config={
-    'CACHE_TYPE': 'redis',
-    'CACHE_REDIS_URL': os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
-    'CACHE_DEFAULT_TIMEOUT': 60,  # 1 minute
-    'CACHE_KEY_PREFIX': 'flow_'
-})
-cache.init_app(app)
-#hiiii
-# Constants
-DB_CONNECTION_TIMEOUT = 5  # seconds
-QUERY_TIMEOUT = 10  # seconds
+# -------------------------
+# PostgreSQL connection
+# -------------------------
+POSTGRES_URI = os.environ.get("POSTGRES_URI")
+if not POSTGRES_URI:
+    raise RuntimeError("POSTGRES_URI environment variable is not set")
 
-# Database connection pool
-db_pool = None
 
-def init_db_pool():
-    global db_pool
-    if not db_pool:
-        db_pool = ThreadedConnectionPool(
-            minconn=5,
-            maxconn=30,
-            dsn=os.environ.get("POSTGRES_URI"),
-            cursor_factory=RealDictCursor,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
-            connect_timeout=DB_CONNECTION_TIMEOUT
-        )
-        logger.info("Initialized database connection pool")
+# def get_db_conn():
+#     return psycopg2.connect(POSTGRES_URI, cursor_factory=RealDictCursor)
 
-def get_db_connection():
-    if not db_pool:
-        init_db_pool()
-    return db_pool.getconn()
+def get_db_conn():
+    try:
+        conn = psycopg2.connect(POSTGRES_URI, cursor_factory=RealDictCursor)
+        # optional: verify with a trivial query
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return conn
+    except psycopg2.Error as e:
+        # log or re-raise with context
+        print("DB connection failed:", e)
+        raise
 
-def return_db_connection(conn):
-    if db_pool:
-        db_pool.putconn(conn)
-
-# Database connection decorator with retry logic
-def with_db_connection(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        max_retries = 3
-        retry_delay = 0.5  # seconds
-        
-        for attempt in range(max_retries):
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(f"SET statement_timeout = {QUERY_TIMEOUT * 1000}")
-                result = f(conn, *args, **kwargs)
-                return result
-            except (OperationalError, psycopg2.OperationalError) as e:
-                logger.warning(f"Database operation failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt == max_retries - 1:
-                    logger.error("Max retries reached")
-                    return jsonify({"error": "Database operation timed out"}), 503
-                time.sleep(retry_delay * (attempt + 1))
-            except Exception as e:
-                logger.error(f"Database error in {f.__name__}: {str(e)}", exc_info=True)
-                return jsonify({"error": "Database error"}), 500
-            finally:
-                return_db_connection(conn)
-    return decorated_function
-
-# Request timing middleware
-@app.before_request
-def start_timer():
-    g.start_time = datetime.now()
-
-@app.after_request
-def log_request(response):
-    if 'start_time' in g:
-        duration = (datetime.now() - g.start_time).total_seconds()
-        logger.info(f"Request {request.method} {request.path} took {duration:.4f}s - {response.status_code}")
-    return response
-
-# Helper Functions
 def now_utc():
     return datetime.utcnow()
 
-def validate_node_data(data, require_id=False):
-    if not isinstance(data, dict):
-        return False, "Invalid data format"
-    
-    if 'name' not in data or not data['name'].strip():
-        return False, "Name is required"
-    
-    if require_id and 'contentId' not in data:
-        return False, "Content ID is required"
-    
-    return True, ""
 
-# Cache key generator
-def make_cache_key(*args, **kwargs):
-    path = request.path
-    args = request.args
-    args_str = str(hash(frozenset(args.items())))
-    return f"{path}:{args_str}"
-
-# Cache invalidation
-def invalidate_cache(*keys):
-    for key in keys:
-        cache.delete(key)
-
-# Create indexes on startup
-def create_indexes(conn):
-    with conn.cursor() as cur:
-        cur.execute("""
-            DO $$
-            BEGIN
-                -- Nodes table indexes
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_indexes 
-                    WHERE tablename = 'nodes' AND indexname = 'idx_nodes_content_id'
-                ) THEN
-                    CREATE INDEX idx_nodes_content_id ON nodes(content_id);
-                END IF;
-                
-                -- Relationships table indexes
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_indexes 
-                    WHERE tablename = 'relationships' AND indexname = 'idx_relationships_parent_child'
-                ) THEN
-                    CREATE INDEX idx_relationships_parent_child ON relationships(parent_id, child_id);
-                END IF;
-                
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_indexes 
-                    WHERE tablename = 'relationships' AND indexname = 'idx_relationships_child'
-                ) THEN
-                    CREATE INDEX idx_relationships_child ON relationships(child_id);
-                END IF;
-                
-                -- Clicks table indexes
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_indexes 
-                    WHERE tablename = 'clicks' AND indexname = 'idx_clicks_source_target'
-                ) THEN
-                    CREATE INDEX idx_clicks_source_target ON clicks(source_id, target_id);
-                END IF;
-                
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_indexes 
-                    WHERE tablename = 'clicks' AND indexname = 'idx_clicks_target'
-                ) THEN
-                    CREATE INDEX idx_clicks_target ON clicks(target_id);
-                END IF;
-            END
-            $$;
-        """)
-        conn.commit()
-@app.route('/tree', methods=['GET'])
-@with_db_connection
-@cache.memoize(timeout=60)
-def get_tree(conn):
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Fetch all nodes
-            cur.execute("""
-                SELECT content_id, title, parent_id, content, 
-                       created_at, updated_at, level, position, 
-                       is_expanded, is_leaf, is_loading, is_editing, 
-                       is_renaming, is_selected, is_hidden, has_children, 
-                       children, metadata, type, icon, is_checked, 
-                       is_indeterminate, is_draggable, is_droppable, 
-                       is_selectable, is_dragging, is_drop_target, 
-                       is_drop_allowed, is_drop_disabled, is_drop_ancestor
-                FROM nodes
-                ORDER BY position
-            """)
-            nodes = cur.fetchall()
-            
-            # Convert UUID and datetime to string for JSON serialization
-            for node in nodes:
-                if 'content_id' in node:
-                    node['content_id'] = str(node['content_id'])
-                if 'created_at' in node and node['created_at']:
-                    node['created_at'] = node['created_at'].isoformat()
-                if 'updated_at' in node and node['updated_at']:
-                    node['updated_at'] = node['updated_at'].isoformat()
-                    
-            return jsonify(nodes)
-            
-    except Exception as e:
-        logger.error(f"Error fetching tree: {str(e)}")
-        return jsonify({"error": "Failed to fetch tree data"}), 500
-# API Endpoints
+# -------------------------
+# CREATE NODE
+# -------------------------
 @app.route("/node/create", methods=["POST"])
-@with_db_connection
-def create_node(conn):
+def create_node():
     data = request.get_json(force=True)
-    is_valid, message = validate_node_data(data)
-    if not is_valid:
-        return jsonify({"error": message}), 400
+    name = data.get("name")
+    description = data.get("description", "")
+    status = data.get("status", "New")
+
+    if not name or name.strip() == "":
+        return jsonify({"error": "name is required"}), 400
 
     content_id = str(uuid.uuid4())
-    with conn.cursor() as cur:
+    created_at = now_utc()
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
         cur.execute(
             """
             INSERT INTO nodes (content_id, name, description, status, created_at)
             VALUES (%s, %s, %s, %s, %s)
-            RETURNING content_id, name, description, status
             """,
-            (content_id, 
-             data['name'].strip(), 
-             data.get('description', '').strip(), 
-             data.get('status', 'New'),
-             now_utc())
+            (content_id, name.strip(), description.strip(), status, created_at),
         )
-        result = cur.fetchone()
         conn.commit()
-    
-    # Invalidate cache
-    cache.delete_memoized(get_tree)
-    cache.delete('all_stats')
-    
-    return jsonify(dict(result))
+    finally:
+        cur.close()
+        conn.close()
 
-@app.route("/node/update/<content_id>", methods=["PUT"])
-@with_db_connection
-def update_node(conn, content_id):
+    return jsonify({
+        "contentId": content_id,
+        "name": name,
+        "description": description,
+        "status": status
+    })
+
+
+# -------------------------
+# UPDATE NODE
+# -------------------------
+@app.route("/node/update/<contentId>", methods=["PUT"])
+def update_node(contentId):
     data = request.get_json(force=True)
-    is_valid, message = validate_node_data(data)
-    if not is_valid:
-        return jsonify({"error": message}), 400
+    name = data.get("name")
+    description = data.get("description", "")
+    status = data.get("status", "New")
 
-    with conn.cursor() as cur:
+    if not name or name.strip() == "":
+        return jsonify({"error": "name is required"}), 400
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
         # Check if node exists
-        cur.execute("SELECT 1 FROM nodes WHERE content_id = %s", (content_id,))
-        if not cur.fetchone():
+        cur.execute(
+            "SELECT content_id FROM nodes WHERE content_id = %s",
+            (contentId,),
+        )
+        existing = cur.fetchone()
+        if not existing:
             return jsonify({"error": "Node not found"}), 404
 
         # Update node
@@ -271,90 +115,486 @@ def update_node(conn, content_id):
                 description = %s,
                 status = %s
             WHERE content_id = %s
-            RETURNING content_id, name, description, status
             """,
-            (data['name'].strip(),
-             data.get('description', '').strip(),
-             data.get('status', 'New'),
-             content_id)
+            (name.strip(), description.strip(), status, contentId),
         )
-        result = cur.fetchone()
         conn.commit()
-    
-    # Invalidate cache
-    cache.delete_memoized(get_tree)
-    cache.delete('all_stats')
-    
-    return jsonify(dict(result))
-
-@app.route("/node/delete/<content_id>", methods=["DELETE"])
-@with_db_connection
-def delete_node(conn, content_id):
-    with conn.cursor() as cur:
-        # Check if node exists
-        cur.execute("SELECT 1 FROM nodes WHERE content_id = %s", (content_id,))
-        if not cur.fetchone():
-            return jsonify({"error": "Node not found"}), 404
-
-        # Start transaction
-        conn.set_session(autocommit=False)
-        try:
-            # Delete relationships
-            cur.execute("DELETE FROM relationships WHERE parent_id = %s OR child_id = %s", 
-                       (content_id, content_id))
-            
-            # Delete clicks
-            cur.execute("DELETE FROM clicks WHERE source_id = %s OR target_id = %s", 
-                       (content_id, content_id))
-            
-            # Delete node
-            cur.execute("DELETE FROM nodes WHERE content_id = %s RETURNING content_id", 
-                       (content_id,))
-            
-            if not cur.fetchone():
-                conn.rollback()
-                return jsonify({"error": "Node not found"}), 404
-                
-            conn.commit()
-            
-            # Invalidate cache
-            cache.delete_memoized(get_tree)
-            cache.delete('all_stats')
-            
-            return jsonify({"message": "Node deleted"})
-            
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error deleting node {content_id}: {str(e)}")
-            return jsonify({"error": "Failed to delete node"}), 500
-
-# [Previous endpoints for search, relationships, clicks, stats, etc. remain exactly the same]
-# ... (include all your existing endpoints here without modification)
-
-# Initialize connection pool and create indexes on startup
-def startup():
-    init_db_pool()
-    # Create database indexes on startup
-    conn = get_db_connection()
-    try:
-        create_indexes(conn)
-    except Exception as e:
-        logger.error(f"Failed to create database indexes: {str(e)}")
     finally:
-        return_db_connection(conn)
+        cur.close()
+        conn.close()
 
-# Call the function when the app starts
-with app.app_context():
-    startup()
+    return jsonify({
+        "contentId": contentId,
+        "name": name,
+        "description": description,
+        "status": status
+    })
 
-# Clean up on shutdown
-def shutdown():
-    if db_pool:
-        db_pool.closeall()
 
+# -------------------------
+# DELETE NODE
+# -------------------------
+@app.route("/node/delete/<contentId>", methods=["DELETE"])
+def delete_node(contentId):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # Delete relationships (as parent or child)
+        cur.execute(
+            """
+            DELETE FROM relationships
+            WHERE parent_id = %s OR child_id = %s
+            """,
+            (contentId, contentId),
+        )
+
+        # Delete clicks (as source or target)
+        cur.execute(
+            """
+            DELETE FROM clicks
+            WHERE source_id = %s OR target_id = %s
+            """,
+            (contentId, contentId),
+        )
+
+        # Delete the node itself
+        cur.execute(
+            "DELETE FROM nodes WHERE content_id = %s",
+            (contentId,),
+        )
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Node deleted"})
+
+
+# -------------------------
+# SEARCH UNRELATED NODES
+# -------------------------
+@app.route("/node/search_unrelated/<contentId>/<search_term>", methods=["GET"])
+def search_unrelated_nodes(contentId, search_term):
+    search_text = search_term.replace("_", " ")
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # All nodes matching search, excluding the parent itself
+        cur.execute(
+            """
+            SELECT content_id AS "contentId",
+                   name,
+                   description,
+                   status
+            FROM nodes
+            WHERE content_id <> %s
+              AND (
+                    name ILIKE %s
+                 OR description ILIKE %s
+              )
+            """,
+            (contentId, f"%{search_text}%", f"%{search_text}%"),
+        )
+        matching_nodes = cur.fetchall()
+
+        if not matching_nodes:
+            return jsonify({"message": "No match"}), 404
+
+        # Existing children of parentId
+        cur.execute(
+            """
+            SELECT child_id
+            FROM relationships
+            WHERE parent_id = %s
+            """,
+            (contentId,),
+        )
+        existing_children_ids = {row["child_id"] for row in cur.fetchall()}
+
+    finally:
+        cur.close()
+        conn.close()
+
+    results = [
+        n for n in matching_nodes
+        if n["contentId"] not in existing_children_ids
+    ]
+
+    if not results:
+        return jsonify({"message": "No unrelated match"}), 404
+
+    return jsonify(results)
+
+
+# -------------------------
+# GENERIC NODE SEARCH (includes existing children)
+# -------------------------
+@app.route("/node/search/<search_term>", methods=["GET"])
+def search_nodes(search_term):
+    search_text = search_term.replace("_", " ")
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT content_id AS "contentId",
+                   name,
+                   description,
+                   status
+            FROM nodes
+            WHERE name ILIKE %s
+               OR description ILIKE %s
+            """,
+            (f"%{search_text}%", f"%{search_text}%"),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        return jsonify({"message": "No match"}), 404
+
+    return jsonify(rows)
+
+
+# -------------------------
+# CREATE RELATIONSHIP
+# -------------------------
+@app.route("/relation/create", methods=["POST"])
+def create_relation():
+    data = request.get_json(force=True)
+    parentId = data.get("parentId")
+    childId = data.get("childId")
+
+    if not parentId or not childId:
+        return jsonify({"error": "parentId and childId required"}), 400
+
+    createdAt = now_utc()
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # Check if relationship already exists
+        cur.execute(
+            """
+            SELECT id
+            FROM relationships
+            WHERE parent_id = %s AND child_id = %s
+            """,
+            (parentId, childId),
+        )
+        rel_exists = cur.fetchone()
+
+        if rel_exists:
+            # Idempotent: treat existing relationship as success
+            return jsonify({"message": "Relationship exists"}), 200
+
+        # Insert new relationship
+        cur.execute(
+            """
+            INSERT INTO relationships (parent_id, child_id, created_at)
+            VALUES (%s, %s, %s)
+            """,
+            (parentId, childId, createdAt),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Relationship created"})
+
+
+# -------------------------
+# DELETE RELATIONSHIP
+# -------------------------
+@app.route("/relation/delete", methods=["DELETE"])
+def delete_relation():
+    data = request.get_json(force=True)
+    parentId = data.get("parentId")
+    childId = data.get("childId")
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # Delete clicks for that pair
+        cur.execute(
+            """
+            DELETE FROM clicks
+            WHERE source_id = %s AND target_id = %s
+            """,
+            (parentId, childId),
+        )
+
+        # Delete relationships for that pair
+        cur.execute(
+            """
+            DELETE FROM relationships
+            WHERE parent_id = %s AND child_id = %s
+            """,
+            (parentId, childId),
+        )
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Relationship deleted"})
+
+
+# -------------------------
+# CLICK LINK
+# -------------------------
+@app.route("/link/click", methods=["POST"])
+def click_link():
+    data = request.get_json(force=True)
+    sourceId = data.get("sourceId")
+    targetId = data.get("targetId")
+
+    now = now_utc()
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # Check if click record exists
+        cur.execute(
+            """
+            SELECT id, count
+            FROM clicks
+            WHERE source_id = %s AND target_id = %s
+            """,
+            (sourceId, targetId),
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            # Update existing record
+            cur.execute(
+                """
+                UPDATE clicks
+                SET count = count + 1,
+                    last_clicked = %s
+                WHERE id = %s
+                """,
+                (now, existing["id"]),
+            )
+        else:
+            # Insert new record
+            cur.execute(
+                """
+                INSERT INTO clicks (source_id, target_id, count, first_clicked, last_clicked)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (sourceId, targetId, 1, now, now),
+            )
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Click recorded"})
+
+
+# -------------------------
+# INBOUND STATS
+# -------------------------
+@app.route("/inbound_stats/<contentId>", methods=["GET"])
+def inbound_stats(contentId):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT source_id AS "sourceId",
+                   count
+            FROM clicks
+            WHERE target_id = %s
+            ORDER BY count DESC
+            """,
+            (contentId,),
+        )
+        clicks = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    total = sum(c["count"] for c in clicks)
+
+    return jsonify({
+        "total_inbound_count": total,
+        "inbound_connections": clicks
+    })
+
+
+# -------------------------
+# OUTBOUND STATS
+# -------------------------
+@app.route("/outbound_stats/<contentId>", methods=["GET"])
+def outbound_stats(contentId):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT target_id AS "targetId",
+                   count
+            FROM clicks
+            WHERE source_id = %s
+            ORDER BY count DESC
+            """,
+            (contentId,),
+        )
+        clicks = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    total = sum(c["count"] for c in clicks)
+
+    return jsonify({
+        "total_outbound_count": total,
+        "outbound_connections": clicks
+    })
+
+
+# -----------------------------------------------------------
+# GET FULL TREE (ENSURE STABLE VISUAL HIERARCHY)
+# -----------------------------------------------------------
+@app.route("/tree", methods=["GET"])
+def get_tree():
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        # 1. Nodes in exact creation order (to determine default root)
+        cur.execute(
+            """
+            SELECT content_id AS "contentId",
+                   name,
+                   description,
+                   status,
+                   created_at
+            FROM nodes
+            ORDER BY created_at ASC
+            """
+        )
+        nodes_raw = cur.fetchall()
+
+        if not nodes_raw:
+            return jsonify([])
+
+        # 2. Fetch ALL relationships ordered by creation time (earliest link wins)
+        cur.execute(
+            """
+            SELECT parent_id AS "parentId",
+                   child_id AS "childId",
+                   created_at
+            FROM relationships
+            ORDER BY created_at ASC
+            """
+        )
+        rels = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    relationships_raw = [(r["parentId"], r["childId"]) for r in rels]
+
+    # Determine the stable visual parent for each child node
+    visual_parent_map = {}
+    for parentId, childId in relationships_raw:
+        if childId not in visual_parent_map:
+            # The first parent encountered for a child becomes its visual parent
+            visual_parent_map[childId] = parentId
+
+    # 3. Initialize nodes structure
+    tree_nodes = {
+        n["contentId"]: {
+            "contentId": n["contentId"],
+            "name": n["name"],
+            "description": n.get("description", "") if isinstance(n, dict) else n["description"],
+            "status": n.get("status", "New") if isinstance(n, dict) else n["status"],
+            "children": []
+        }
+        for n in nodes_raw
+    }
+
+    # 4. Identify the stable root (the first node created)
+    root_id = nodes_raw[0]["contentId"]
+
+    # 5. Build the visual hierarchy (children list) using only the stable visual parent
+    for childId, parentId in visual_parent_map.items():
+        # Only establish a visual link if the parent exists and the child is not the root node itself
+        if parentId in tree_nodes and childId != root_id:
+            tree_nodes[parentId]["children"].append(childId)
+
+    # 6. Convert the map back to a list, maintaining the original creation order
+    result_tree = [tree_nodes[n["contentId"]] for n in nodes_raw]
+
+    return jsonify(result_tree)
+
+@app.route("/stats/all", methods=["GET"])
+def get_all_stats():
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            # Get total inbound clicks per node (where node is the target)
+            cur.execute("""
+                SELECT target_id AS node_id, COALESCE(SUM(count), 0) AS total_inbound_count
+                FROM clicks
+                GROUP BY target_id
+            """)
+            inbound_stats = {row["node_id"]: row["total_inbound_count"] for row in cur.fetchall()}
+
+            # Get total outbound clicks per node (where node is the source)
+            cur.execute("""
+                SELECT source_id AS node_id, COALESCE(SUM(count), 0) AS total_outbound_count
+                FROM clicks
+                GROUP BY source_id
+            """)
+            outbound_stats = {row["node_id"]: row["total_outbound_count"] for row in cur.fetchall()}
+
+            # Combine all node IDs from both queries
+            all_node_ids = set(inbound_stats.keys()) | set(outbound_stats.keys())
+            
+            # Build response with 0 as default for missing entries
+            result = {
+                node_id: {
+                    "total_inbound_count": inbound_stats.get(node_id, 0),
+                    "total_outbound_count": outbound_stats.get(node_id, 0)
+                }
+                for node_id in all_node_ids
+            }
+
+            return jsonify(result)
+    finally:
+        conn.close()
+# -------------------------
+# RESET ALL
+# -------------------------
+@app.route("/reset", methods=["DELETE"])
+def reset_all():
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM clicks")
+        cur.execute("DELETE FROM relationships")
+        cur.execute("DELETE FROM nodes")
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Reset done"})
+
+
+# -------------------------
+# START SERVER
+# -------------------------
 if __name__ == "__main__":
-    try:
-        port = int(os.environ.get("PORT", 5000))
-        app.run(host="0.0.0.0", port=port, threaded=True)
-    finally:
-        shutdown()
+    app.run(port=5000, debug=False)
