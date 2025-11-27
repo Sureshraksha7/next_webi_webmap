@@ -471,73 +471,47 @@ def get_tree():
     conn = get_db_conn()
     cur = conn.cursor()
     try:
-        # 1. Nodes in exact creation order (to determine default root)
-        cur.execute(
-            """
-            SELECT content_id AS "contentId",
-                   name,
-                   description,
-                   status,
-                   created_at
-            FROM nodes
-            ORDER BY created_at ASC
-            """
-        )
-        nodes_raw = cur.fetchall()
-
-        if not nodes_raw:
+        # 1. Get all nodes with a single query
+        cur.execute("""
+            SELECT 
+                n.content_id AS "contentId",
+                n.name,
+                n.description,
+                n.status,
+                n.created_at,
+                ARRAY_AGG(r.child_id) AS children
+            FROM nodes n
+            LEFT JOIN relationships r ON n.content_id = r.parent_id
+            GROUP BY n.content_id, n.name, n.description, n.status, n.created_at
+            ORDER BY n.created_at
+        """)
+        
+        nodes = cur.fetchall()
+        if not nodes:
             return jsonify([])
 
-        # 2. Fetch ALL relationships ordered by creation time (earliest link wins)
-        cur.execute(
-            """
-            SELECT parent_id AS "parentId",
-                   child_id AS "childId",
-                   created_at
-            FROM relationships
-            ORDER BY created_at ASC
-            """
-        )
-        rels = cur.fetchall()
+        # 2. Build the response with children arrays
+        node_map = {node['contentId']: dict(node) for node in nodes}
+        
+        # 3. Handle root node (first created node)
+        root_id = nodes[0]['contentId']
+        result = []
+        
+        for node in nodes:
+            node_dict = {
+                'contentId': node['contentId'],
+                'name': node['name'],
+                'description': node['description'],
+                'status': node['status'],
+                'children': [child_id for child_id in (node['children'] or []) if child_id in node_map]
+            }
+            result.append(node_dict)
+            
+        return jsonify(result)
+        
     finally:
         cur.close()
         conn.close()
-
-    relationships_raw = [(r["parentId"], r["childId"]) for r in rels]
-
-    # Determine the stable visual parent for each child node
-    visual_parent_map = {}
-    for parentId, childId in relationships_raw:
-        if childId not in visual_parent_map:
-            # The first parent encountered for a child becomes its visual parent
-            visual_parent_map[childId] = parentId
-
-    # 3. Initialize nodes structure
-    tree_nodes = {
-        n["contentId"]: {
-            "contentId": n["contentId"],
-            "name": n["name"],
-            "description": n.get("description", "") if isinstance(n, dict) else n["description"],
-            "status": n.get("status", "New") if isinstance(n, dict) else n["status"],
-            "children": []
-        }
-        for n in nodes_raw
-    }
-
-    # 4. Identify the stable root (the first node created)
-    root_id = nodes_raw[0]["contentId"]
-
-    # 5. Build the visual hierarchy (children list) using only the stable visual parent
-    for childId, parentId in visual_parent_map.items():
-        # Only establish a visual link if the parent exists and the child is not the root node itself
-        if parentId in tree_nodes and childId != root_id:
-            tree_nodes[parentId]["children"].append(childId)
-
-    # 6. Convert the map back to a list, maintaining the original creation order
-    result_tree = [tree_nodes[n["contentId"]] for n in nodes_raw]
-
-    return jsonify(result_tree)
-
 
 # -------------------------
 # RESET ALL
@@ -556,7 +530,7 @@ def reset_all():
         conn.close()
 
     return jsonify({"message": "Reset done"})
-# -------------------------------------------------
+
 @app.route("/stats/all", methods=["GET"])
 def get_all_stats():
     conn = get_db_conn()
